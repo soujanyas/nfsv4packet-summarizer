@@ -717,7 +717,7 @@ static gint ett_nfs4_want_notify_flags = -1;
 static expert_field ei_nfs_too_many_ops = EI_INIT;
 static expert_field ei_nfs_not_vnx_file = EI_INIT;
 
-static int nfs_packet_zipper_tap = -1;
+static int nfs_packet_summarizer_tap = -1;
 
 
 /* Types of fhandles we can dissect */
@@ -9413,7 +9413,7 @@ dissect_nfs4_compound_call(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_
 
 	offset = dissect_rpc_uint32(tvb, tree, hf_nfs4_minorversion, offset);
 	offset = dissect_nfs4_request_op(tvb, offset, pinfo, tree, (rpc_call_info_value*)data);
-	tap_queue_packet(nfs_packet_zipper_tap, pinfo, tvb);//TODO: Enqueue only for NFS4?!!
+	tap_queue_packet(nfs_packet_summarizer_tap, pinfo, tvb);//TODO: Enqueue only for NFS4?!!
 	return offset;
 }
 
@@ -9853,7 +9853,7 @@ dissect_nfs4_compound_reply(tvbuff_t *tvb, int offset, packet_info *pinfo,
 		col_append_fstr(pinfo->cinfo, COL_INFO," %s", tag);
 
 	offset = dissect_nfs4_response_op(tvb, offset, pinfo, tree, (rpc_call_info_value*)data);
-	tap_queue_packet(nfs_packet_zipper_tap, pinfo, tvb);
+	tap_queue_packet(nfs_packet_summarizer_tap, pinfo, tvb);
 
 	if (status != NFS4_OK)
 		col_append_fstr(pinfo->cinfo, COL_INFO," Status: %s",
@@ -12611,7 +12611,7 @@ proto_register_nfs(void)
 	nfs_file_handles        = wmem_tree_new_autoreset(wmem_epan_scope(), wmem_file_scope());
 	nfs_fhandle_frame_table = wmem_tree_new_autoreset(wmem_epan_scope(), wmem_file_scope());
 	register_init_routine(nfs_name_snoop_init);
-	nfs_packet_zipper_tap = register_tap("nfs_packet_zipper");
+	nfs_packet_summarizer_tap = register_tap("nfs_packet_summarizer");
 }
 
 

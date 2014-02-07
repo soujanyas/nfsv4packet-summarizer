@@ -66,7 +66,7 @@ TSHARK_TAP_SRC = \
 	tap-macltestat.c	\
 	tap-megacostat.c	\
 	tap-mgcpstat.c		\
-	tap-nfs-packet-zipper.c	\
+	tap-nfs-packet-summarizer.c	\
 	tap-protocolinfo.c	\
 	tap-protohierstat.c	\
 	tap-radiusstat.c	\

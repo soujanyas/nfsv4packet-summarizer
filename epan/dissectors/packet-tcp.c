@@ -319,7 +319,7 @@ static expert_field ei_tcp_checksum_ffff = EI_INIT;
 static expert_field ei_tcp_checksum_bad = EI_INIT;
 static expert_field ei_tcp_urgent_pointer_non_zero = EI_INIT;
 
-static int nfs_tcp_packet_zipper_tap = -1;
+static int nfs_tcp_packet_summarizer_tap = -1;
 
 /* Some protocols such as encrypted DCE/RPCoverHTTP have dependencies
  * from one PDU to the next PDU and require that they are called in sequence.
@@ -1997,10 +1997,10 @@ again:
         if (tcpd && ((nxtseq - deseg_seq) <= 1024*1024)
             && (!PINFO_FD_VISITED(pinfo))) {
 			/* 
-			 * Enqueue first packet of an MSP packet to NFS packet zipper tap
+			 * Enqueue first packet of an MSP packet to NFS packet summarizer tap
 			 */
 			printf("\nEnqueuing packet to tap");
-	    	tap_queue_packet(nfs_tcp_packet_zipper_tap, pinfo, NULL); 
+	    	tap_queue_packet(nfs_tcp_packet_summarizer_tap, pinfo, NULL); 
             if(pinfo->desegment_len == DESEGMENT_ONE_MORE_SEGMENT) {
                 /* The subdissector asked to reassemble using the
                  * entire next segment.
@@ -5708,7 +5708,7 @@ proto_register_tcp(void)
     register_init_routine(tcp_init);
 
     register_decode_as(&tcp_da);
-    nfs_tcp_packet_zipper_tap = register_tap("nfs_packet_zipper");	
+    nfs_tcp_packet_summarizer_tap = register_tap("nfs_packet_summarizer");	
 }
 
 void
