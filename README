@@ -1,0 +1,99 @@
+NFS Packet Summarizer: filter and condense NFS packets dump 
+
+--------------------------------------------------------------------------------------------------
+COMPILING TSHARK:
+
+# svn co http://anonsvn.wireshark.org/wireshark/trunk/ -r 53516 wireshark
+# ./autogen.sh
+  ( Autogen will fail if any of the dependant packages are missing, Eg: autoconf, libtool )
+# sudo apt-get install autoconf
+# sudo apt-get install libtool
+
+# ./configure
+  configure: error: Qt is not available
+# Download and install qt
+
+If one intends to use only Tshark, GTK/Qt need not be configured for the project.
+# ./configure --enable-wireshark=no
+(The above step will fail if any of the required packages are missing Eg: libglib)
+# sudo apt-get install libglib2.0-dev
+# make 
+
+----------------------------------------------------------------------------------------------------
+ADDING A NEW TAP:
+
+Refer to README.tapping in trunk/docs of wireshark repository. You can also find a copy
+the same in ./README.tapping for svn revision 53516
+
+Apart from steps specified in README.tapping a few changes need to be made to Make files
+to add a Tap.
+
+For nfs-packet-summarizer tap, modifications done are:
+
+ui/cli/Makefile.common           An entry tap-nfs-packet-summarizer.c added to TSHARK_TAP_SRC
+                                 This makefile is used to define rules to generate 
+                                 tshark-tap-register.c using tools/make-tap-reg.py.
+
+ui/cli/tap-nfs-packet-summarizer.c   Tap file used to compress the nfs packets.
+
+epan/dissectors/packet-nfs.c     Dissector object needs to be modified to enqueue 
+                                 packets onto a registered tap.
+CMakeLists.txt                   An entry tap-nfs-packet-summarizer.c added to TSHARK_TAP_SRC
+                                 which will be used for the registration of Tap.
+
+------------------------------------------------------------------------------------------------------
+PATCH INFORMATION:
+-------------------------------------
+nfs_summarizer_text_op.patch:
+
+This patch contains changes to output NFS operations of packets processed in the system in TEXT format.
+The text file (tapped_data.txt) will be created on the pwd of the running application (tshark).
+
+Examples:
+./tshark -r test_pcap_files/1mb_write.pcap
+./tshark -r test_pcap_files/read_1mb.pcap
+
+------------------------------------------------------------------------------------------------------
+nfs_summarizer_pcap_op.patch
+
+This patch contains changes to output NFS operations if packets processed in the system in TEXT and PCAP 
+format. The pcap file (tapped_data.pcap) and text file (tapped_data.txt) will be created on the pwd of 
+the running application (tshark).
+
+pcap file details:
+All the NFS READ/WRITE packets that span across multiple TCP segments will be condensensed into a single 
+NFS packet which embeds all the NFS4 COMPOUND operations executed as a part of that NFS call/reply.
+
+In the summary packet, data held by WRITE/READ operation is the length of the actual READ/WRITE operation.
+
+EXAMPLES:
+-----------------------------------------------------
+Getting compressed packet dump from 1MB file write operation
+# ./tshark -r test_pcap_files/1mb_write.pcap
+# vi tapped_data.txt
+# wireshark tapped_data.pcap (HAS SUMMARY PACKETS)
+# wireshark test_pcap_files/1mb_write.pcap (HAS ORIGINAL PACKETS)
+
+Getting compressed packet dump from 1MB file read operation
+# ./tshark -r test_pcap_files/1.6mb_read.pcap
+# vi tapped_data.txt
+# wireshark tapped_data.pcap (HAS SUMMARY PACKETS)
+# wireshark test_pcap_files/read_1mb.pcap (HAS ORIGINAL PACKETS)
+
+Getting compressed packet dump during live capture
+# ./tshark -P -i <interface> -w <original_packets.pcap>
+# vi tapped_data.txt
+# wireshark tapped_data.pcap (HAS SUMMARY PACKETS)
+# wireshark <original_packets.pcap> (HAS ORIGINAL PACKETS) 
+
+SAMPLE FILES:
+------------------------------------------------------
+$PROJET_HOME/nfs-packet-summarizer/test_pcap_files/
+1.6mb_read.pcap / 1.6mb_read_summary.pcap 	   -- Original and summary pcap files for NFS read operation
+						      of a file of size 1.6MB.
+1mb_write.pcap / 1mb_write_summary.pcap		   -- Original and summary pcap files for NFS write operation
+						      of a file of size 1MB.
+67mb_read_write.pcap / 67mb_read_write_summary.pcap -- Original and summary pcap files for NFS write operation 						      					     of a file of size 67MB followed by read of a file 1.6MB.
+
+-------------------------------------------------------------------------------------------------------------
+
