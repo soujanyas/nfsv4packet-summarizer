@@ -20,11 +20,20 @@
 #define WRITE_OP 0x26
 #define READ_OP 0x19
 #define MESSAGE_TYPE_OFFSET 0x08
-#define MESSAGE_TYPE_CALL 0x00
-#define MESSAGE_TYPE_REPLY 0x01
+#define CALL 0x00
+#define REPLY 0x01
 #define MAX_PACKET_LEN 1500
 #define ERR -1
 #define OP_NOT_HANDLED 0
+#define DEBUG 1
+
+#define ACCESS 0x03
+#define ACCESS_LEN 4
+#define SEQUENCE 0x35
+#define SEQUENCE_LEN 8
+#define PUTFH 0x16
+
+
 
 #define VALIDATE_PACKET_OFFSET(packet_offset, max_len)                         \
             /*                                                                 \
@@ -114,6 +123,10 @@ summarize_write_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
          */
         VALIDATE_PACKET_OFFSET(packet_offset, tvb->length);
         op_data_len = read_word(tvb_data, packet_offset);
+        #ifdef DEBUG
+        printf("Length of write:%d\n",op_data_len);
+        fflush(NULL);
+        #endif
         /*
          * Overwrite length of write operation with 4
          */
@@ -133,7 +146,9 @@ summarize_write_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
         }
         VALIDATE_PACKET_OFFSET(packet_offset, tvb->length);
         nfs_op = read_word(tvb_data, third_op_start);
-        printf("Operation : %x", nfs_op);
+        #ifdef DEBUG
+        printf("Operation after write:%d\n",nfs_op);
+        #endif
         /*
          * Copy contents of the third operation into the new buffer
          */
@@ -157,6 +172,77 @@ print_tvb_contents(tvbuff_t *tvb){
     }
 }
 
+
+/*
+ * Get length of the NFS operation. Only few cases that are relevent are 
+ * addressed here. TODO: Observe this part with enhancements.
+ */
+gint32
+get_op_data_len(gint8 message_type, gint32 nfs_op, guint32 packet_offset, guint8 *tvb_data){
+    if(message_type == REPLY){
+        switch(nfs_op){
+            case ACCESS: return ACCESS_LEN * 4; 
+            case SEQUENCE:  return 4 + SEQUENCE_LEN * 4;
+            default: return 2 * 4; //NFS_OK
+        }
+    } else if(message_type == CALL){
+        switch(nfs_op){
+            case SEQUENCE: return SEQUENCE_LEN * 4;
+            case PUTFH:
+                //packet_offset points to the operation itself
+                return (4 + read_word(tvb_data, packet_offset)); 
+            default: return 2 * 4;
+        }
+    } else {
+        /* Won't reach here */
+        return -1;
+    }
+}
+
+guint32
+resolve_rpc_header_len(guint8 *tvb_data, gint8 message_type){
+
+/* 
+ * RPC header + NFS header structure for message type == CALL:
+|...RPC...|Cred_len....|..Ver_len..|tag_len..|min_ver|opertion.. | operation.. |....
+
+ * RPC header + NFS header structure for message type == REPLY:
+|...RPC...|..Ver_len..|Accept_state | NFS_reply_satus | tag_len..|opertion.. | operation.. |....
+ */
+    int offset;
+    guint32 len;
+    if(message_type == CALL){
+    // |Frag_header | XID | Message_type | RPC version | Pgm | pgmversion | Procedure
+        offset = 0x1c; 
+        offset += 4; //credential type
+        len = read_word(tvb_data, offset);
+        offset += 4 + len;//rpc credential len
+        //Verifier
+        offset += 4;//AUTH Method word
+        //verifier len
+        len = read_word(tvb_data, offset);
+        offset += 4 + len;
+        //Read tag length
+        len = read_word(tvb_data, offset);
+        offset += 4 + len;
+        offset += 4;//minor version increment
+    } else{
+    // |Frag_header | XID | Msg_type | Reply_state |
+        offset = 0x10;
+        //Verifier
+        offset += 4;//AUTH Method word
+        //verifier len
+        len = read_word(tvb_data, offset);
+        offset += 4 + len;
+        //| Accespt_state | NFS_reply_status |
+        offset += 8;
+        //Read tag length
+        len = read_word(tvb_data, offset);
+        offset += 4 + len;
+    }
+    return offset;
+}
+
 int
 is_read_write (tvbuff_t *tvb, guint32 *packet_offset_ptr){
         guint32 packet_offset;
@@ -164,6 +250,7 @@ is_read_write (tvbuff_t *tvb, guint32 *packet_offset_ptr){
         gint32 op_data_len;
         gint8 message_type;
         guint8 *tvb_data;
+        guint32 num_ops;
         #ifdef TRACE
         print_tvb_contents(tvb);
         #endif
@@ -178,17 +265,23 @@ is_read_write (tvbuff_t *tvb, guint32 *packet_offset_ptr){
         #ifdef DEBUG
         printf("Message type is:%d\n", message_type);
         #endif
-        if(message_type == MESSAGE_TYPE_CALL){
-            packet_offset = NFS_PACKET_CALL_START;
-        } else if(message_type == MESSAGE_TYPE_REPLY) {
-            packet_offset = NFS_PACKET_REPLY_START;
+        if(message_type == CALL || message_type == REPLY){
+            packet_offset = resolve_rpc_header_len(tvb_data, message_type);
+            packet_offset += 4; // Message type itself
         } else {
             /*
              * We don't know what message type it is, we don't handle this. Return.
              */
             return -1;
         }
-        packet_offset += 4;
+        VALIDATE_PACKET_OFFSET(packet_offset-4, tvb->length);
+        num_ops = read_word(tvb_data, packet_offset-4);
+        #ifdef DEBUG
+        printf("Number of operations: %d\n",num_ops);
+        #endif
+    /* Read number of NFS operations in one COMPOUND operation */
+     while(num_ops > 0){
+        num_ops --;
         /*
          * Read first operation this NFS packet embeds
          */
@@ -197,58 +290,55 @@ is_read_write (tvbuff_t *tvb, guint32 *packet_offset_ptr){
         #ifdef DEBUG
         printf("Nfs operation is : %x ",nfs_op);
         #endif
-        packet_offset += 4;
-        /*
-         * Read length of the data for this operation
-         */
-        VALIDATE_PACKET_OFFSET(packet_offset, tvb->length);
-        op_data_len = read_word(tvb_data, packet_offset);
-        packet_offset += (op_data_len + 4);
-        /*
-         * Handle huge chunk of READ/WRITE data now
-         */
-        VALIDATE_PACKET_OFFSET(packet_offset, tvb->length);
-        nfs_op = read_word(tvb_data, packet_offset);
-        #ifdef DEBUG
-        printf("Nfs operation is : %x ",nfs_op);
-        fflush(NULL);
-        #endif
-        *packet_offset_ptr = packet_offset;
+
         /*
          * Determine what operation this packet contains
          */
-        if(nfs_op == READ_OP && message_type == MESSAGE_TYPE_REPLY ){
+        if(nfs_op == READ_OP && message_type == REPLY ){
+            *packet_offset_ptr = packet_offset;
             return nfs_op;
-        } else if(nfs_op == WRITE_OP && message_type == MESSAGE_TYPE_CALL) {
+        } else if(nfs_op == WRITE_OP && message_type == CALL) {
+            *packet_offset_ptr = packet_offset;
             return nfs_op;
-        } else {
-            /*
-             * We don't handle any other operation for MSP, skip processing this
-             * NFS packet
-             */
-            return OP_NOT_HANDLED;
-        }
+        } 
+        /*
+         * Read length of the data for this operation
+         */
+        packet_offset += 4;
+        op_data_len = get_op_data_len(message_type, nfs_op, packet_offset, tvb_data);
+        printf(" Len:%d\n",op_data_len);
+        packet_offset += op_data_len;
+     }
+     /*
+      * We don't handle any other operation for MSP, skip processing this
+      * NFS packet
+      */
+      return ERR;
 }
-
-
 
 /*
  * Returns offset within the new packet at which the data section ends
  */
 int
 operate_nfs_data(guint8* data, tvbuff_t *tvb){
-        guint32 packet_offset;
-        gint32 nfs_op = is_read_write(tvb, &packet_offset);
-        if( nfs_op == WRITE_OP){
-            return summarize_write_packets( data, tvb, packet_offset);
-        } else if (nfs_op == READ_OP){
-            return summarize_read_packets( data, tvb, packet_offset);
-        } else {
-            /*
-             * Ideally control should not reach here.
-             */
-            return ERR;
-        }
+    guint32 packet_offset;
+    gint32 nfs_op = is_read_write(tvb, &packet_offset);
+    if( nfs_op == WRITE_OP){
+        #ifdef DEBUG
+            printf("\nWrite packet..");
+        #endif
+        return summarize_write_packets( data, tvb, packet_offset);
+    } else if (nfs_op == READ_OP){
+        #ifdef DEBUG
+            printf("\nRead packet..");
+        #endif
+        return summarize_read_packets( data, tvb, packet_offset);
+    } else {
+        /*
+         * Ideally control should not reach here.
+         */
+        return ERR;
+    }
 }
 
 /* 
@@ -272,7 +362,6 @@ print_packet_summary(packet_info *pinfo){
     line_buf = print_columns_ci((column_info*)pinfo->cinfo);
     /* print_line_text */
     return print_stream->ops->print_line(print_stream, 0, line_buf);
-
 }
 
 /*
