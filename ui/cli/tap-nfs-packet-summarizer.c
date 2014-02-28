@@ -8,8 +8,12 @@
 #include <epan/epan_dissect.h>
 #include <epan/tvbuff-int.h>
 #include <unistd.h>
-#define TCP_HEADER_LEN 0x42
-#define TCP_SEGLEN_OFFSET 0x42
+
+#define ETH_HEADER_LEN 14u
+#define IP_HEADER_LEN 20u
+#define TCP_HEADER_LEN_OFFSET ETH_HEADER_LEN+IP_HEADER_LEN+12
+
+#define RPC_SEG_LEN_OFFSET 0x42
 #define NFS_PACKET_REPLY_START 0x24
 #define NFS_PACKET_CALL_START 0x70
 #define FIRST_OPLEN_OFFSET 0x08
@@ -22,18 +26,18 @@
 #define MESSAGE_TYPE_OFFSET 0x08
 #define CALL 0x00
 #define REPLY 0x01
-#define MAX_PACKET_LEN 1500
+#define MAX_PACKET_LEN 1500u
 #define ERR -1
 #define OP_NOT_HANDLED 0
 #define DEBUG 1
 
+/* Fixed lengths of various standard NFS operations */
 #define ACCESS 0x03
 #define ACCESS_LEN 4
 #define SEQUENCE 0x35
 #define SEQUENCE_LEN 8
+#define REPLY_SEQUENCE_LEN 10
 #define PUTFH 0x16
-
-
 
 #define VALIDATE_PACKET_OFFSET(packet_offset, max_len)                         \
             /*                                                                 \
@@ -44,6 +48,10 @@
                 printf("ERR:Packet offset going out of bounds, skipping packet");\
                 return ERR;                          \
             }
+
+#define TCP_IP_HEADER_LEN(header_start) \
+        /* Take higher order 4 bits for header length */ \
+        ETH_HEADER_LEN + IP_HEADER_LEN + ((*(header_start + TCP_HEADER_LEN_OFFSET))>>2)
 
 char* print_columns_ci(column_info *ci);
 wtap_dumper *pdumper;
@@ -63,8 +71,8 @@ nfs_packet_summarizer_state_t *nfs_state;
 print_stream_t* print_stream;
 
 void
-write_word(guint8* data, int offset, int value){
-    offset += TCP_HEADER_LEN;
+write_word(guint8* data, int offset, int value, guint8 base){
+    offset += base;
     *(data + offset + 0) = (guint8)((value & 0xff000000) >> 24);
     *(data + offset + 1) = (guint8)((value & 0x00ff0000) >> 16);
     *(data + offset + 2) = (guint8)((value & 0x0000ff00) >> 8);
@@ -88,7 +96,8 @@ read_word(guint8 *data, gint32 offset){
 }
 
 int
-summarize_read_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
+summarize_read_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset, 
+                       guint8 tcp_header_len){
     guint32 read_word_len =0;
     guint8 *tvb_data = (guint8*) tvb->real_data;
     /*
@@ -101,18 +110,19 @@ summarize_read_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
      */
     VALIDATE_PACKET_OFFSET(packet_offset, tvb->length);
     read_word_len = read_word(tvb_data, packet_offset);
-    write_word( data, packet_offset, READ_LEN_MOD);
+    write_word( data, packet_offset, READ_LEN_MOD, tcp_header_len);
     packet_offset += 4;
     /*
      * Put the length of the read as data for read operation
      */
-    write_word( data, packet_offset, read_word_len);
+    write_word( data, packet_offset, read_word_len, tcp_header_len);
     //TODO: Will there be a 3rd operation?
-    return packet_offset + TCP_HEADER_LEN + 4;
+    return packet_offset + tcp_header_len + 4;
 }
 
 int
-summarize_write_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
+summarize_write_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset,
+                        guint8 tcp_header_len){
         int op_data_len;
         guint32 third_op_start;
         guint nfs_op;
@@ -130,12 +140,12 @@ summarize_write_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
         /*
          * Overwrite length of write operation with 4
          */
-        write_word(data, packet_offset, WRITE_LEN_MOD);
+        write_word(data, packet_offset, WRITE_LEN_MOD, tcp_header_len);
         packet_offset += 4;
         /*
          * Overwrite content of write operation with length of write
          */
-        write_word(data, packet_offset, op_data_len);
+        write_word(data, packet_offset, op_data_len, tcp_header_len);
         third_op_start = packet_offset + op_data_len;
         packet_offset += WRITE_LEN_MOD;
         /*
@@ -152,10 +162,10 @@ summarize_write_packets(guint8 *data, tvbuff_t *tvb, guint32 packet_offset){
         /*
          * Copy contents of the third operation into the new buffer
          */
-        memcpy(data + TCP_HEADER_LEN + packet_offset,
+        memcpy(data + tcp_header_len + packet_offset,
                 tvb_data + third_op_start,
                 tvb->length - third_op_start);
-        return TCP_HEADER_LEN + packet_offset + tvb->length - third_op_start;
+        return tcp_header_len + packet_offset + tvb->length - third_op_start;
 }
 
 void
@@ -172,6 +182,15 @@ print_tvb_contents(tvbuff_t *tvb){
     }
 }
 
+void 
+printnbytes(const guint8 *data, int n){
+    int i;
+    for(i = 0; i < n; i++){
+        if( i%20 == 0 ) printf ("\n");
+        printf("%x ", *(data+i));
+    }
+}
+
 
 /*
  * Get length of the NFS operation. Only few cases that are relevent are 
@@ -182,8 +201,8 @@ get_op_data_len(gint8 message_type, gint32 nfs_op, guint32 packet_offset, guint8
     if(message_type == REPLY){
         switch(nfs_op){
             case ACCESS: return ACCESS_LEN * 4; 
-            case SEQUENCE:  return 4 + SEQUENCE_LEN * 4;
-            default: return 2 * 4; //NFS_OK
+            case SEQUENCE:  return REPLY_SEQUENCE_LEN * 4;
+            default: return 1 * 4; //NFS_OK
         }
     } else if(message_type == CALL){
         switch(nfs_op){
@@ -214,6 +233,7 @@ resolve_rpc_header_len(guint8 *tvb_data, gint8 message_type){
     if(message_type == CALL){
     // |Frag_header | XID | Message_type | RPC version | Pgm | pgmversion | Procedure
         offset = 0x1c; 
+        //TODO: MACRO for this
         offset += 4; //credential type
         len = read_word(tvb_data, offset);
         offset += 4 + len;//rpc credential len
@@ -306,7 +326,6 @@ is_read_write (tvbuff_t *tvb, guint32 *packet_offset_ptr){
          */
         packet_offset += 4;
         op_data_len = get_op_data_len(message_type, nfs_op, packet_offset, tvb_data);
-        printf(" Len:%d\n",op_data_len);
         packet_offset += op_data_len;
      }
      /*
@@ -323,16 +342,17 @@ int
 operate_nfs_data(guint8* data, tvbuff_t *tvb){
     guint32 packet_offset;
     gint32 nfs_op = is_read_write(tvb, &packet_offset);
+    guint8 tcp_header_len = TCP_IP_HEADER_LEN(data);
     if( nfs_op == WRITE_OP){
         #ifdef DEBUG
             printf("\nWrite packet..");
         #endif
-        return summarize_write_packets( data, tvb, packet_offset);
+        return summarize_write_packets( data, tvb, packet_offset, tcp_header_len);
     } else if (nfs_op == READ_OP){
         #ifdef DEBUG
             printf("\nRead packet..");
         #endif
-        return summarize_read_packets( data, tvb, packet_offset);
+        return summarize_read_packets( data, tvb, packet_offset, tcp_header_len);
     } else {
         /*
          * Ideally control should not reach here.
@@ -368,14 +388,14 @@ print_packet_summary(packet_info *pinfo){
  * Set TCP segment length for this packet
  */
 void
-set_tcp_seglen(guint8 *new_data, gint32 seglen)
+set_rpc_seglen(guint8 *new_data, gint32 seglen)
 {
     /*
      * Every packet that has reached this point has packet size > 1444
      */
-    *(new_data + TCP_SEGLEN_OFFSET + 1) = (guint8)((seglen & 0xff0000)>>16);
-    *(new_data + TCP_SEGLEN_OFFSET + 2) = (guint8)((seglen & 0x00ff00)>>8); 
-    *(new_data + TCP_SEGLEN_OFFSET + 3) = (guint8)((seglen & 0x0000ff));
+    *(new_data + RPC_SEG_LEN_OFFSET + 1) = (guint8)((seglen & 0xff0000)>>16);
+    *(new_data + RPC_SEG_LEN_OFFSET + 2) = (guint8)((seglen & 0x00ff00)>>8); 
+    *(new_data + RPC_SEG_LEN_OFFSET + 3) = (guint8)((seglen & 0x0000ff));
 }
 /*
  * Create a new compressed NFS packet from the original NFS packet(s).
@@ -386,23 +406,29 @@ handle_nfs_read_write(packet_info *pinfo, epan_dissect_t *edt, tvbuff_t *tvb){
     gint32 err = 0;
     guint8 *new_data = NULL;
     guint32 max_new_data_packet_len;
-    max_new_data_packet_len = (MAX_PACKET_LEN > tvb->length + TCP_HEADER_LEN
-                                ? tvb->length
-                                : MAX_PACKET_LEN - TCP_HEADER_LEN);
+    guint8 tcp_header_len;
     new_data = (guint8*)g_malloc( MAX_PACKET_LEN );
     if(saved_packet_header != NULL) {
         /*
         * This is an NFS Multi Segment Packet (MSP). Copy TCP header
         * from the first TCP packet of this MSP stream.
         */
-        memcpy(new_data, saved_packet_header, TCP_HEADER_LEN);
+        #ifdef DEBUG
+        printnbytes(saved_packet_header, 80);
+        #endif
+        tcp_header_len = TCP_IP_HEADER_LEN(saved_packet_header);
+        memcpy(new_data, saved_packet_header, tcp_header_len);
     } else {
         /*
          * This is not an MSP, copy packet header of the same packet.
          */
-         memcpy(new_data, edt->tvb->real_data, TCP_HEADER_LEN);
+         tcp_header_len = TCP_IP_HEADER_LEN((edt->tvb->real_data));
+         memcpy(new_data, edt->tvb->real_data, tcp_header_len);
     }
-    memcpy(new_data + TCP_HEADER_LEN,
+    max_new_data_packet_len = (MAX_PACKET_LEN > tvb->length + tcp_header_len
+                                ? tvb->length
+                                : MAX_PACKET_LEN - tcp_header_len);
+    memcpy(new_data + tcp_header_len,
             tvb->real_data,
             max_new_data_packet_len);
     /*
@@ -422,7 +448,8 @@ handle_nfs_read_write(packet_info *pinfo, epan_dissect_t *edt, tvbuff_t *tvb){
     printf("Capture len is : %x\n", caplen);
     #endif
     pinfo->phdr->caplen = caplen;
-    set_tcp_seglen(new_data, caplen - TCP_HEADER_LEN);
+    /* Set length of the RPC segment for this NFS packet */
+    set_rpc_seglen(new_data, caplen - tcp_header_len - 4);
     wtap_dump(pdumper, pinfo->phdr, new_data, &err);
     cleanup_tap_step(new_data);
     return TRUE;
@@ -476,8 +503,8 @@ nfs_packet_summarizer_packet(void *tapdata,
             #ifdef DEBUG
             printf("NULL data - saving packet header\n");
             #endif
-            saved_packet_header = (guint8*)g_malloc(TCP_HEADER_LEN);
-            memcpy(saved_packet_header, edt->tvb->real_data, TCP_HEADER_LEN);
+            saved_packet_header = (guint8*)g_malloc(TCP_IP_HEADER_LEN(edt->tvb->real_data));
+            memcpy(saved_packet_header, edt->tvb->real_data, TCP_IP_HEADER_LEN(edt->tvb->real_data));
         }
     }
     /*

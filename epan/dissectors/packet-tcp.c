@@ -491,7 +491,7 @@ static void tcp_both_prompt(packet_info *pinfo, gchar* result)
 /* **************************************************************************
  * RTT, relative sequence numbers, window scaling & etc.
  * **************************************************************************/
-static gboolean tcp_analyze_seq           = TRUE;
+static gboolean tcp_analyze_seq           = FALSE;
 static gboolean tcp_relative_seq          = TRUE;
 static gboolean tcp_track_bytes_in_flight = TRUE;
 static gboolean tcp_calculate_ts          = FALSE;
@@ -1999,7 +1999,9 @@ again:
 			/* 
 			 * Enqueue first packet of an MSP packet to NFS packet summarizer tap
 			 */
+            #ifdef DEBUG 
 			printf("\nEnqueuing packet to tap");
+            #endif
 	    	tap_queue_packet(nfs_tcp_packet_summarizer_tap, pinfo, NULL); 
             if(pinfo->desegment_len == DESEGMENT_ONE_MORE_SEGMENT) {
                 /* The subdissector asked to reassemble using the
