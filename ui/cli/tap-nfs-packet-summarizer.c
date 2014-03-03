@@ -14,6 +14,7 @@
 #define TCP_HEADER_LEN_OFFSET ETH_HEADER_LEN+IP_HEADER_LEN+12
 
 #define RPC_SEG_LEN_OFFSET 0x42
+#define IP_PKT_LEN_OFFSET 0x10
 #define NFS_PACKET_REPLY_START 0x24
 #define NFS_PACKET_CALL_START 0x70
 #define FIRST_OPLEN_OFFSET 0x08
@@ -385,18 +386,33 @@ print_packet_summary(packet_info *pinfo){
 }
 
 /*
- * Set TCP segment length for this packet
+ * Set RPC segment length for this packet
  */
 void
 set_rpc_seglen(guint8 *new_data, gint32 seglen)
 {
     /*
+     * is_last_fragment, <63 bits seglen>
+     */
+    *(new_data + RPC_SEG_LEN_OFFSET + 0) = (guint8)(((guint8)((seglen & 0xff000000)>>24)) | 0x80);
+    *(new_data + RPC_SEG_LEN_OFFSET + 1) = (guint8)((seglen & 0x00ff0000)>>16);
+    *(new_data + RPC_SEG_LEN_OFFSET + 2) = (guint8)((seglen & 0x0000ff00)>>8); 
+    *(new_data + RPC_SEG_LEN_OFFSET + 3) = (guint8)((seglen & 0x000000ff));
+}
+
+/*
+ * Set IP packet length for this packet
+ */
+void
+set_ip_pktlen(guint8 *new_data, gint32 seglen)
+{
+    /*
      * Every packet that has reached this point has packet size > 1444
      */
-    *(new_data + RPC_SEG_LEN_OFFSET + 1) = (guint8)((seglen & 0xff0000)>>16);
-    *(new_data + RPC_SEG_LEN_OFFSET + 2) = (guint8)((seglen & 0x00ff00)>>8); 
-    *(new_data + RPC_SEG_LEN_OFFSET + 3) = (guint8)((seglen & 0x0000ff));
+    *(new_data + IP_PKT_LEN_OFFSET + 0) = (guint8)((seglen & 0x00ff00)>>8);
+    *(new_data + IP_PKT_LEN_OFFSET + 1) = (guint8)((seglen & 0x0000ff));
 }
+
 /*
  * Create a new compressed NFS packet from the original NFS packet(s).
  */
@@ -447,8 +463,16 @@ handle_nfs_read_write(packet_info *pinfo, epan_dissect_t *edt, tvbuff_t *tvb){
     #ifdef DEBUG
     printf("Capture len is : %x\n", caplen);
     #endif
+    /* Set capture file length */
     pinfo->phdr->caplen = caplen;
-    /* Set length of the RPC segment for this NFS packet */
+    /* Set data on wire length */
+    pinfo->phdr->len = caplen;
+    /* 
+     * Set length of the IP segment and RPC segment for this NFS packet
+     * Note that overwriting IP packet length would cause checksum error
+     * But that's okay for us! TODO: Reqrite checksum? 
+     */
+    set_ip_pktlen(new_data, caplen - ETH_HEADER_LEN);
     set_rpc_seglen(new_data, caplen - tcp_header_len - 4);
     wtap_dump(pdumper, pinfo->phdr, new_data, &err);
     cleanup_tap_step(new_data);
